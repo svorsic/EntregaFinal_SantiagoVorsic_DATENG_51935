@@ -59,12 +59,11 @@ def get_process_date(**kwargs):
 def enviar_exito():
     try:
         x=smtplib.SMTP('smtp.gmail.com',587)
-        x.starttls()#
-        # send email using password save in python variable
+        x.starttls()
         x.login(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_PASSWORD'))
         subject='ETL Exitoso'
-        body_text=final
-        message='La tarea de extracción de datos de Covid en Medellín fue exitosa'
+        body_text='La tarea de extracción de datos de Covid en Medellín fue exitosa'
+        message='Subject: {}\n\n{}'.format(subject,body_text)
         x.sendmail(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_EMAIL_TO'),message)
         print('Exito')
     except Exception as exception:
