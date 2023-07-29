@@ -1,6 +1,6 @@
 # Este es el DAG que orquesta el ETL de la tabla covid_colombia
 
-from airflow import DAG, Variable
+from airflow import DAG
 
 from airflow.operators.python_operator import PythonOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
