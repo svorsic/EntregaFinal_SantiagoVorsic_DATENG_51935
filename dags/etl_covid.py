@@ -58,8 +58,6 @@ def get_process_date(**kwargs):
         
 def enviar_exito():
     try:
-        return None
-        raise Exception('Error')
         x=smtplib.SMTP('smtp.gmail.com',587)
         x.starttls()#
         # send email using password save in python variable
