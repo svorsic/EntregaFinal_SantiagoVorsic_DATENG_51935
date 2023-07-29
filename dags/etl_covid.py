@@ -5,9 +5,11 @@ from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
-
-
+from airflow.utils.dates import days_ago
 from airflow.models import Variable
+
+from airflow.sensors.base_sensor_operator import BaseSensorOperator
+from airflow.exceptions import AirflowSensorTimeout
 
 import smtplib
 from datetime import datetime, timedelta
@@ -55,14 +57,53 @@ def get_process_date(**kwargs):
             "process_date", datetime.now().strftime("%Y-%m-%d")
         )
     kwargs["ti"].xcom_push(key="process_date", value=process_date)
+
+# Sensor de aposible alerta dentro de los procesos de ETL
+
+class SensorDemora(BaseSensorOperator):
+
+    #Sensor que chequea si la acción realizada lleva más del tiempo esperado, en este caso se fija un límite de 15 minutos.
+
+    def __init__(self, max_execution_time, *args, **kwargs):
+        super(SensorDemora, self).__init__(*args, **kwargs)
+        self.max_execution_time = max_execution_time
+
+    def poke(self, context):
+        task_instance = context['task_instance']
+        execution_time = task_instance.duration()
+        execution_time_limit = datetime.timedelta(minutes=self.max_execution_time)
+
+        if execution_time > execution_time_limit:
+            raise AirflowSensorTimeout("La tarea ha tardado mas de 15 minutos en ejecutarse")
+        else:
+            return False
         
+# Email de notificación de la alerta
+    
+def enviar_alerta():
+    try:
+        x=smtplib.SMTP('smtp.gmail.com',587)
+        x.starttls()
+        x.login(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_PASSWORD'))
+        subject='Alerta: El proceso de ETL esta demorando mas de lo deseado'
+        body_text='El ETL se encuentra demorado, el proceso esta en riesgo. Se recomienda monitorear la situacion.'
+        message='Subject: {}\n\n{}'.format(subject,body_text)
+        x.sendmail(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_EMAIL_TO'),message)
+        print('Exito')
+    except Exception as exception:
+        print(exception)
+        print('Failure')
+        raise exception
+
+# Email de comprobación de proceso exitoso
+
 def enviar_exito():
     try:
         x=smtplib.SMTP('smtp.gmail.com',587)
         x.starttls()
         x.login(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_PASSWORD'))
         subject='ETL Exitoso'
-        body_text='La tarea de extracción de datos de Covid en Medellín fue exitosa'
+        body_text='La tarea de extraccion de datos de Covid en Medellin fue exitosa'
         message='Subject: {}\n\n{}'.format(subject,body_text)
         x.sendmail(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_EMAIL_TO'),message)
         print('Exito')
@@ -73,9 +114,12 @@ def enviar_exito():
 
 default_args = {
     "owner": "Santiago Vorsic",
-    "start_date": datetime(2023, 7, 1),
+    'start_date': days_ago(1),
     "retries": 3,
     "retry_delay": timedelta(seconds=5),
+    'depends_on_past': False,
+    'email_on_failure': True,
+    'email_on_retry': False,
 }
 
 with DAG(
@@ -86,7 +130,6 @@ with DAG(
     catchup=False,
 ) as dag:
     
-    # Tareas
     get_process_date_task = PythonOperator(
         task_id="get_process_date",
         python_callable=get_process_date,
@@ -116,6 +159,18 @@ with DAG(
         driver_class_path=Variable.get("driver_class_path"),
     )
 
+    sensor = SensorDemora(
+        task_id='sensor_alerta',
+        max_execution_time=15,  # Tiempo máximo de ejecución permitido en minutos
+        dag=dag,
+    )
+
+    email_alerta = PythonOperator(
+        task_id="email_alerta",
+        python_callable=enviar_alerta,
+        dag=dag,
+    )
+
     email_exito = PythonOperator(
         task_id="email_exito",
         python_callable=enviar_exito,
@@ -123,3 +178,4 @@ with DAG(
     )
 
     get_process_date_task >> create_table >> clean_process_date >> spark_etl_covid >> email_exito
+    spark_etl_covid >> sensor >> email_alerta
