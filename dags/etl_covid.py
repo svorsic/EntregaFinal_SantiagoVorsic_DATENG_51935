@@ -9,9 +9,11 @@ from airflow.utils.dates import days_ago
 from airflow.models import Variable
 
 from airflow.sensors.base_sensor_operator import BaseSensorOperator
-from airflow.exceptions import AirflowSensorTimeout
+from airflow.exceptions import AirflowSensorTimeout, AirflowSkipException
 
 import smtplib
+import pytz
+import importlib_metadata
 from datetime import datetime, timedelta
 from email import message
 
@@ -64,29 +66,40 @@ class SensorDemora(BaseSensorOperator):
 
     #Sensor que chequea si la acción realizada lleva más del tiempo esperado, en este caso se fija un límite de 15 minutos.
 
-    def __init__(self, max_execution_time, *args, **kwargs):
+
+    def __init__(self, *args, **kwargs):
         super(SensorDemora, self).__init__(*args, **kwargs)
-        self.max_execution_time = max_execution_time
 
     def poke(self, context):
-        task_instance = context['task_instance']
-        execution_time = task_instance.duration()
-        execution_time_limit = datetime.timedelta(minutes=self.max_execution_time)
+        # Obtener el tiempo de inicio de la tarea actual
+        execution_date = context['execution_date']
+        start_time = context['ti'].start_date
 
-        if execution_time > execution_time_limit:
-            raise AirflowSensorTimeout("La tarea ha tardado mas de 15 minutos en ejecutarse")
+        # Obtener el tiempo actual ajustando zona horaria
+        current_time = datetime.now(tz=pytz.utc)
+
+        # Calcular la diferencia de tiempo entre el inicio y el tiempo actual
+        time_difference = current_time - start_time
+
+        # Verificar si han pasado más de 15 minutos (900 segundos)
+        if time_difference.total_seconds() > 900:
+            # Si han pasado más de 15 minutos, generar una alerta
+            enviar_alerta(self)
+            raise AirflowSensorTimeout("La tarea ha tardado más de 15 minutos en ejecutarse")
+        # Si no ha pasado suficiente tiempo, el sensor continuará monitoreando la tarea
         else:
-            return False
-        
-# Email de notificación de la alerta
-    
+            raise AirflowSkipException("La operación se completó con éxito. Todo parece en orden por ahora.")
+
+
+# Email de alerta de fallo.
+
 def enviar_alerta():
     try:
         x=smtplib.SMTP('smtp.gmail.com',587)
         x.starttls()
         x.login(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_PASSWORD'))
         subject='Alerta: El proceso de ETL esta demorando mas de lo deseado'
-        body_text='El ETL se encuentra demorado, el proceso esta en riesgo. Se recomienda monitorear la situacion.'
+        body_text = "El ETL se encuentra demorado, el proceso esta en riesgo. Se recomienda monitorear la situacion."
         message='Subject: {}\n\n{}'.format(subject,body_text)
         x.sendmail(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_EMAIL_TO'),message)
         print('Exito')
@@ -102,10 +115,10 @@ def enviar_exito():
         x=smtplib.SMTP('smtp.gmail.com',587)
         x.starttls()
         x.login(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_PASSWORD'))
-        subject='ETL Exitoso'
-        body_text='La tarea de extraccion de datos de Covid en Medellin fue exitosa'
-        message='Subject: {}\n\n{}'.format(subject,body_text)
-        x.sendmail(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_EMAIL_TO'),message)
+        subject2='ETL Exitoso'
+        body_text2='La tarea de extraccion de datos de Covid en Medellin fue exitosa. Puede tener paz en el alma hasta que surja el proximo error.'
+        message2='Subject: {}\n\n{}'.format(subject2,body_text2)
+        x.sendmail(Variable.get('SMTP_EMAIL_FROM'), Variable.get('SMTP_EMAIL_TO'),message2)
         print('Exito')
     except Exception as exception:
         print(exception)
@@ -114,12 +127,10 @@ def enviar_exito():
 
 default_args = {
     "owner": "Santiago Vorsic",
-    'start_date': days_ago(1),
-    "retries": 3,
+    'start_date': datetime(2023, 7, 1),
+    "retries": 1,
     "retry_delay": timedelta(seconds=5),
     'depends_on_past': False,
-    'email_on_failure': True,
-    'email_on_retry': False,
 }
 
 with DAG(
@@ -159,16 +170,10 @@ with DAG(
         driver_class_path=Variable.get("driver_class_path"),
     )
 
-    sensor = SensorDemora(
-        task_id='sensor_alerta',
-        max_execution_time=15,  # Tiempo máximo de ejecución permitido en minutos
+    sensor_fallo = SensorDemora(
+        task_id='sensor_fallo',
         dag=dag,
-    )
-
-    email_alerta = PythonOperator(
-        task_id="email_alerta",
-        python_callable=enviar_alerta,
-        dag=dag,
+        poke_interval=60
     )
 
     email_exito = PythonOperator(
@@ -178,4 +183,4 @@ with DAG(
     )
 
     get_process_date_task >> create_table >> clean_process_date >> spark_etl_covid >> email_exito
-    spark_etl_covid >> sensor >> email_alerta
+    spark_etl_covid >> sensor_fallo
